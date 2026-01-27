@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-coach"
+version = "0.1.0"
+description = "Extract insights from Claude Code logs for self-improvement and coaching"
+readme = "../README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Claude-Coach Contributors" }
+]
+keywords = ["claude", "code", "analytics", "insights", "coaching"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-multipart>=0.0.6",
+    "aiosqlite>=0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.26.0",
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+claude-coach = "claude_coach.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/YOUR_USERNAME/claude-coach"
+Repository = "https://github.com/YOUR_USERNAME/claude-coach"
+Issues = "https://github.com/YOUR_USERNAME/claude-coach/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_coach"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
