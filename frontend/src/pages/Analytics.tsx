@@ -14,23 +14,26 @@ import {
   Cell,
 } from 'recharts'
 import { fetchTokenUsage, fetchToolUsage, fetchErrorStats, fetchPlanModeStats } from '../api/analytics'
+import { useProjectFilter } from '../context/ProjectContext'
 
 const COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4']
 
 function Analytics() {
+  const { projectsParam } = useProjectFilter()
+
   const { data: tokenData, isLoading: tokenLoading } = useQuery({
-    queryKey: ['tokenUsage'],
-    queryFn: fetchTokenUsage,
+    queryKey: ['tokenUsage', projectsParam],
+    queryFn: () => fetchTokenUsage({ project: projectsParam }),
   })
 
   const { data: toolData, isLoading: toolLoading } = useQuery({
-    queryKey: ['toolUsage'],
-    queryFn: fetchToolUsage,
+    queryKey: ['toolUsage', projectsParam],
+    queryFn: () => fetchToolUsage({ project: projectsParam }),
   })
 
   const { data: errorData, isLoading: errorLoading } = useQuery({
-    queryKey: ['errorStats'],
-    queryFn: fetchErrorStats,
+    queryKey: ['errorStats', projectsParam],
+    queryFn: () => fetchErrorStats({ project: projectsParam }),
   })
 
   const { data: planModeData, isLoading: planModeLoading } = useQuery({

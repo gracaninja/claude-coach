@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional
 from sqlalchemy.orm import Session as DBSession
+from sqlalchemy import func
 
 from claude_coach.schemas.session import (
     SessionList,
@@ -17,9 +18,32 @@ from claude_coach.api.deps import get_db
 router = APIRouter()
 
 
+@router.get("/filters")
+async def get_filters(db: DBSession = Depends(get_db)):
+    """Get unique projects and branches for filtering."""
+    projects = (
+        db.query(Session.project_path)
+        .distinct()
+        .order_by(Session.project_path)
+        .all()
+    )
+    branches = (
+        db.query(Session.git_branch)
+        .filter(Session.git_branch.isnot(None))
+        .distinct()
+        .order_by(Session.git_branch)
+        .all()
+    )
+    return {
+        "projects": [p[0] for p in projects],
+        "branches": [b[0] for b in branches],
+    }
+
+
 @router.get("", response_model=SessionList)
 async def list_sessions(
-    project: Optional[str] = Query(None, description="Filter by project path"),
+    project: Optional[list[str]] = Query(None, description="Filter by project paths"),
+    branch: Optional[str] = Query(None, description="Filter by git branch"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: DBSession = Depends(get_db),
@@ -28,7 +52,9 @@ async def list_sessions(
     query = db.query(Session)
 
     if project:
-        query = query.filter(Session.project_path.contains(project))
+        query = query.filter(Session.project_path.in_(project))
+    if branch:
+        query = query.filter(Session.git_branch == branch)
 
     total = query.count()
     sessions = query.order_by(Session.created_at.desc()).offset(offset).limit(limit).all()
@@ -71,6 +97,11 @@ async def get_session(
 
     return SessionDetail(
         session_id=session.session_id,
+        project_path=session.project_path,
+        git_branch=session.git_branch,
+        first_prompt=session.first_prompt,
+        created=session.created_at.isoformat() if session.created_at else None,
+        modified=session.modified_at.isoformat() if session.modified_at else None,
         messages=[
             MessageSchema(
                 role=m.role,

@@ -3,21 +3,24 @@ import { Link } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { fetchTokenUsage, fetchToolUsage } from '../api/analytics'
 import { fetchSessions } from '../api/sessions'
+import { useProjectFilter } from '../context/ProjectContext'
 
 function Dashboard() {
+  const { projectsParam } = useProjectFilter()
+
   const { data: sessions, isLoading: sessionsLoading } = useQuery({
-    queryKey: ['sessions'],
-    queryFn: () => fetchSessions({ limit: 5 }),
+    queryKey: ['sessions', projectsParam],
+    queryFn: () => fetchSessions({ limit: 5, project: projectsParam }),
   })
 
   const { data: tokenData, isLoading: tokenLoading } = useQuery({
-    queryKey: ['tokenUsage'],
-    queryFn: fetchTokenUsage,
+    queryKey: ['tokenUsage', projectsParam],
+    queryFn: () => fetchTokenUsage({ project: projectsParam }),
   })
 
   const { data: toolData, isLoading: toolLoading } = useQuery({
-    queryKey: ['toolUsage'],
-    queryFn: fetchToolUsage,
+    queryKey: ['toolUsage', projectsParam],
+    queryFn: () => fetchToolUsage({ project: projectsParam }),
   })
 
   return (

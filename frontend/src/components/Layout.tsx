@@ -1,11 +1,98 @@
+import { useState, useRef, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
+import { useProjectFilter } from '../context/ProjectContext'
 
 const navItems = [
   { path: '/', label: 'Dashboard' },
   { path: '/sessions', label: 'Sessions' },
   { path: '/analytics', label: 'Analytics' },
+  { path: '/errors', label: 'Errors' },
   { path: '/insights', label: 'Insights' },
 ]
+
+function getProjectName(projectPath: string): string {
+  if (!projectPath) return '-'
+  const parts = projectPath.split('/')
+  return parts[parts.length - 1] || projectPath
+}
+
+function ProjectSelector() {
+  const [isOpen, setIsOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const {
+    allProjects,
+    selectedProjects,
+    isAllSelected,
+    toggleProject,
+    selectAll,
+  } = useProjectFilter()
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const displayText = isAllSelected
+    ? 'All Projects'
+    : selectedProjects.length === 1
+    ? getProjectName(selectedProjects[0])
+    : `${selectedProjects.length} projects`
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      >
+        <span className="max-w-[200px] truncate">{displayText}</span>
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute right-0 mt-2 w-72 bg-white border border-gray-200 rounded-md shadow-lg z-50 max-h-96 overflow-auto">
+          <div className="p-2 border-b">
+            <button
+              onClick={selectAll}
+              className={`w-full text-left px-3 py-2 text-sm rounded hover:bg-gray-100 ${
+                isAllSelected ? 'bg-indigo-50 text-indigo-700 font-medium' : ''
+              }`}
+            >
+              All Projects
+            </button>
+          </div>
+          <div className="p-2">
+            {allProjects.map((project) => {
+              const isSelected = selectedProjects.includes(project)
+              return (
+                <label
+                  key={project}
+                  className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 rounded cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleProject(project)}
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span className="truncate" title={project}>
+                    {getProjectName(project)}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Layout() {
   const location = useLocation()
@@ -34,6 +121,9 @@ function Layout() {
                   </Link>
                 ))}
               </div>
+            </div>
+            <div className="flex items-center">
+              <ProjectSelector />
             </div>
           </div>
         </div>

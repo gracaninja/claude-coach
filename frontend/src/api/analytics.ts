@@ -53,24 +53,27 @@ export async function fetchTokenUsage(params: {
   start_date?: string
   end_date?: string
   session_id?: string
+  project?: string[]
 } = {}): Promise<TokenUsageResponse> {
-  const response = await api.get('/analytics/tokens', { params })
+  const response = await api.get('/analytics/tokens', { params, paramsSerializer: { indexes: null } })
   return response.data
 }
 
 export async function fetchToolUsage(params: {
   start_date?: string
   end_date?: string
+  project?: string[]
 } = {}): Promise<ToolUsageResponse> {
-  const response = await api.get('/analytics/tools', { params })
+  const response = await api.get('/analytics/tools', { params, paramsSerializer: { indexes: null } })
   return response.data
 }
 
 export async function fetchErrorStats(params: {
   start_date?: string
   end_date?: string
+  project?: string[]
 } = {}): Promise<ErrorStatsResponse> {
-  const response = await api.get('/analytics/errors', { params })
+  const response = await api.get('/analytics/errors', { params, paramsSerializer: { indexes: null } })
   return response.data
 }
 
@@ -111,5 +114,95 @@ export interface PlanModeResponse {
 
 export async function fetchPlanModeStats(): Promise<PlanModeResponse> {
   const response = await api.get('/analytics/plan-mode')
+  return response.data
+}
+
+// Error Analysis types
+export interface ToolErrorDetail {
+  tool_name: string
+  error_message: string
+  error_category: string
+  timestamp?: string
+  session_id: string
+  project_path?: string
+  tool_input?: Record<string, unknown>
+}
+
+export interface SubcategoryDetail {
+  count: number
+  example?: string
+}
+
+export interface ErrorCategorySummary {
+  category: string
+  count: number
+  description: string
+  suggestion: string
+  example_errors: string[]
+  subcategories?: Record<string, SubcategoryDetail>
+}
+
+export interface ToolErrorSummary {
+  tool_name: string
+  total_errors: number
+  by_category: Record<string, number>
+}
+
+export interface ActionableIssue {
+  issue_type: string
+  description: string
+  fix: string
+  count: number
+  projects: string[]
+  examples: string[]
+}
+
+export interface ErrorAnalysisResponse {
+  total_errors: number
+  by_category: ErrorCategorySummary[]
+  by_tool: ToolErrorSummary[]
+  recent_errors: ToolErrorDetail[]
+  actionable_issues: ActionableIssue[]
+}
+
+export interface DailyErrorSummary {
+  date: string
+  total: number
+  by_category: Record<string, number>
+}
+
+export interface TimeframeErrorsResponse {
+  days: number
+  total_errors: number
+  daily: DailyErrorSummary[]
+  actionable_issues: ActionableIssue[]
+}
+
+export interface SessionErrorsResponse {
+  session_id: string
+  project_path?: string
+  total_errors: number
+  by_category: ErrorCategorySummary[]
+  errors: ToolErrorDetail[]
+}
+
+export async function fetchErrorAnalysis(params: {
+  project?: string
+  limit?: number
+} = {}): Promise<ErrorAnalysisResponse> {
+  const response = await api.get('/analytics/error-analysis', { params })
+  return response.data
+}
+
+export async function fetchErrorsByTimeframe(params: {
+  days?: number
+  project?: string
+} = {}): Promise<TimeframeErrorsResponse> {
+  const response = await api.get('/analytics/error-analysis/timeframe', { params })
+  return response.data
+}
+
+export async function fetchSessionErrors(sessionId: string): Promise<SessionErrorsResponse> {
+  const response = await api.get(`/analytics/error-analysis/session/${sessionId}`)
   return response.data
 }

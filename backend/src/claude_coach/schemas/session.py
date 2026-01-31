@@ -44,6 +44,11 @@ class SessionDetail(BaseModel):
     """Detailed session information."""
 
     session_id: str
+    project_path: Optional[str] = None
+    git_branch: Optional[str] = None
+    first_prompt: Optional[str] = None
+    created: Optional[str] = None
+    modified: Optional[str] = None
     messages: list[Message]
     total_input_tokens: int
     total_output_tokens: int

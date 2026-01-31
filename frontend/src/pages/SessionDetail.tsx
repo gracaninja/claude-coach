@@ -2,7 +2,18 @@ import { useQuery } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { fetchSession } from '../api/sessions'
-import { fetchContextGrowth } from '../api/analytics'
+import { fetchContextGrowth, fetchSessionErrors } from '../api/analytics'
+
+function getProjectName(projectPath?: string): string {
+  if (!projectPath) return '-'
+  const parts = projectPath.split('/')
+  return parts[parts.length - 1] || projectPath
+}
+
+function formatDate(dateStr?: string): string {
+  if (!dateStr) return '-'
+  return new Date(dateStr).toLocaleString()
+}
 
 function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>()
@@ -19,6 +30,12 @@ function SessionDetail() {
     enabled: !!sessionId,
   })
 
+  const { data: errorData } = useQuery({
+    queryKey: ['sessionErrors', sessionId],
+    queryFn: () => fetchSessionErrors(sessionId!),
+    enabled: !!sessionId,
+  })
+
   if (isLoading) return <div>Loading session...</div>
   if (error) return <div>Error loading session</div>
   if (!session) return <div>Session not found</div>
@@ -30,6 +47,38 @@ function SessionDetail() {
           &larr; Back to Sessions
         </Link>
         <h1 className="text-2xl font-bold">Session Detail</h1>
+      </div>
+
+      <div className="bg-white p-6 rounded-lg shadow">
+        <h2 className="text-lg font-semibold mb-4">Session Info</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
+          <div>
+            <span className="font-medium text-gray-500">Project:</span>{' '}
+            <span className="text-gray-900">{getProjectName(session.project_path)}</span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-500">Branch:</span>{' '}
+            <span className="text-gray-900">{session.git_branch || '-'}</span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-500">Created:</span>{' '}
+            <span className="text-gray-900">{formatDate(session.created)}</span>
+          </div>
+          <div>
+            <span className="font-medium text-gray-500">Modified:</span>{' '}
+            <span className="text-gray-900">{formatDate(session.modified)}</span>
+          </div>
+          <div className="md:col-span-2">
+            <span className="font-medium text-gray-500">Full Path:</span>{' '}
+            <span className="text-gray-700 font-mono text-xs">{session.project_path || '-'}</span>
+          </div>
+        </div>
+        {session.first_prompt && (
+          <div className="mt-4 pt-4 border-t">
+            <span className="font-medium text-gray-500">First Prompt:</span>
+            <p className="text-gray-900 mt-1">{session.first_prompt}</p>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -63,6 +112,57 @@ function SessionDetail() {
               <Line type="monotone" dataKey="context_tokens" stroke="#6366f1" />
             </LineChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Error Analysis Section */}
+      {errorData && errorData.total_errors > 0 && (
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-lg font-semibold mb-4">
+            Tool Errors ({errorData.total_errors})
+          </h2>
+
+          {/* Error Categories with Suggestions */}
+          <div className="space-y-3 mb-6">
+            {errorData.by_category.map((cat) => (
+              <div key={cat.category} className="border rounded-lg p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium capitalize">
+                    {cat.category.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-sm font-semibold text-red-600">{cat.count}</span>
+                </div>
+                <p className="text-sm text-gray-600">{cat.description}</p>
+                <div className="mt-2 bg-blue-50 p-2 rounded text-sm">
+                  <span className="font-medium text-blue-700">Suggestion: </span>
+                  <span className="text-blue-600">{cat.suggestion}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Individual Errors */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium text-gray-700">Error Details</h3>
+            {errorData.errors.slice(0, 10).map((err, idx) => (
+              <div key={idx} className="bg-red-50 p-3 rounded text-sm">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2 py-0.5 bg-red-600 text-white text-xs rounded">
+                    {err.tool_name}
+                  </span>
+                  <span className="text-xs text-gray-500 capitalize">
+                    {err.error_category.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <p className="text-gray-700 line-clamp-2">{err.error_message}</p>
+              </div>
+            ))}
+            {errorData.errors.length > 10 && (
+              <p className="text-sm text-gray-500">
+                ... and {errorData.errors.length - 10} more errors
+              </p>
+            )}
+          </div>
         </div>
       )}
 

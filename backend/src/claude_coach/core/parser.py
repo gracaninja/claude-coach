@@ -44,24 +44,77 @@ class LogParser:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Session]:
-        """List all sessions, optionally filtered by project."""
+        """List all sessions, optionally filtered by project.
+
+        Sessions are discovered from both sessions-index.json files
+        and directly from JSONL files in project directories.
+        """
         sessions = []
+        seen_session_ids = set()
 
         for project_dir in self._get_project_dirs():
             if project and project not in str(project_dir):
                 continue
 
+            # First try sessions-index.json for richer metadata
             for entry in self._parse_sessions_index(project_dir):
-                sessions.append(Session(
-                    session_id=entry.get("sessionId", ""),
-                    project_path=entry.get("projectPath", ""),
-                    first_prompt=entry.get("firstPrompt", ""),
-                    summary=entry.get("summary"),
-                    message_count=entry.get("messageCount", 0),
-                    created=entry.get("created"),
-                    modified=entry.get("modified"),
-                    git_branch=entry.get("gitBranch"),
-                ))
+                session_id = entry.get("sessionId", "")
+                if session_id and session_id not in seen_session_ids:
+                    seen_session_ids.add(session_id)
+                    sessions.append(Session(
+                        session_id=session_id,
+                        project_path=entry.get("projectPath", ""),
+                        first_prompt=entry.get("firstPrompt", ""),
+                        summary=entry.get("summary"),
+                        message_count=entry.get("messageCount", 0),
+                        created=entry.get("created"),
+                        modified=entry.get("modified"),
+                        git_branch=entry.get("gitBranch"),
+                    ))
+
+            # Also discover sessions directly from JSONL files
+            for session_file in project_dir.glob("*.jsonl"):
+                session_id = session_file.stem
+                if session_id in seen_session_ids:
+                    continue
+                seen_session_ids.add(session_id)
+
+                # Get basic info from file stats and first line
+                try:
+                    stat = session_file.stat()
+                    created = datetime.fromtimestamp(stat.st_ctime).isoformat()
+                    modified = datetime.fromtimestamp(stat.st_mtime).isoformat()
+
+                    # Try to get first prompt from file
+                    first_prompt = ""
+                    with open(session_file) as f:
+                        for line in f:
+                            try:
+                                event = json.loads(line)
+                                if event.get("type") == "user":
+                                    msg = event.get("message", {})
+                                    content = msg.get("content", "")
+                                    if isinstance(content, str) and content:
+                                        first_prompt = content[:200]
+                                        break
+                            except json.JSONDecodeError:
+                                continue
+
+                    # Derive project path from directory name
+                    project_path = str(project_dir.name).replace("-", "/")
+
+                    sessions.append(Session(
+                        session_id=session_id,
+                        project_path=project_path,
+                        first_prompt=first_prompt,
+                        summary=None,
+                        message_count=0,
+                        created=created,
+                        modified=modified,
+                        git_branch=None,
+                    ))
+                except (IOError, OSError):
+                    continue
 
         # Sort by modified date, newest first
         sessions.sort(key=lambda s: s.modified or "", reverse=True)
@@ -98,6 +151,7 @@ class LogParser:
         errors = []
 
         # Plan mode tracking
+        # Plan mode starts when writing to ~/.claude/plans/ and ends with ExitPlanMode
         in_plan_mode = False
         plan_mode_start: Optional[datetime] = None
         plan_mode_entries = 0
@@ -108,6 +162,7 @@ class LogParser:
         planning_messages = 0
         execution_messages = 0
         last_timestamp: Optional[datetime] = None
+        first_timestamp: Optional[datetime] = None
 
         with open(session_file) as f:
             for line in f:
@@ -119,9 +174,28 @@ class LogParser:
                     event_type = event.get("type")
                     timestamp = self._parse_timestamp(event.get("timestamp"))
 
+                    # Track first timestamp for session duration
+                    if timestamp and first_timestamp is None:
+                        first_timestamp = timestamp
+
                     if event_type == "user":
                         msg = event.get("message", {})
                         content = msg.get("content", "")
+
+                        # Check for tool_result containing plan file creation
+                        if isinstance(content, list):
+                            for part in content:
+                                if part.get("type") == "tool_result":
+                                    tool_result = event.get("toolUseResult", {})
+                                    if isinstance(tool_result, dict):
+                                        file_path = tool_result.get("filePath", "")
+                                        # Detect plan file creation - this marks start of plan mode
+                                        if "/.claude/plans/" in file_path and tool_result.get("type") == "create":
+                                            if not in_plan_mode:
+                                                in_plan_mode = True
+                                                plan_mode_start = timestamp
+                                                plan_mode_entries += 1
+
                         if isinstance(content, str):
                             messages.append(Message(
                                 role="user",
@@ -164,16 +238,17 @@ class LogParser:
                                     "timestamp": event.get("timestamp"),
                                 })
 
-                                # Detect plan mode transitions
-                                if tool_name == "EnterPlanMode":
-                                    if not in_plan_mode:
-                                        in_plan_mode = True
-                                        plan_mode_start = timestamp
-                                        plan_mode_entries += 1
-                                        # Add execution time from last timestamp
-                                        if last_timestamp and timestamp:
-                                            execution_time_seconds += (timestamp - last_timestamp).total_seconds()
+                                # Detect plan mode start from Write tool to plans directory
+                                if tool_name == "Write":
+                                    tool_input = part.get("input", {})
+                                    file_path = tool_input.get("file_path", "")
+                                    if "/.claude/plans/" in file_path:
+                                        if not in_plan_mode:
+                                            in_plan_mode = True
+                                            plan_mode_start = timestamp
+                                            plan_mode_entries += 1
 
+                                # Detect plan mode end
                                 elif tool_name == "ExitPlanMode":
                                     if in_plan_mode and plan_mode_start and timestamp:
                                         planning_time_seconds += (timestamp - plan_mode_start).total_seconds()
@@ -196,14 +271,17 @@ class LogParser:
                             "timestamp": event.get("timestamp"),
                         })
 
-                    # Track time between messages for execution mode
+                    # Update last timestamp
                     if timestamp:
-                        if last_timestamp and not in_plan_mode:
-                            execution_time_seconds += (timestamp - last_timestamp).total_seconds()
                         last_timestamp = timestamp
 
                 except json.JSONDecodeError:
                     continue
+
+        # Calculate execution time as total session time minus planning time
+        if first_timestamp and last_timestamp:
+            total_session_time = (last_timestamp - first_timestamp).total_seconds()
+            execution_time_seconds = max(0, total_session_time - planning_time_seconds)
 
         # Create plan mode stats
         plan_mode_stats = PlanModeStats(
