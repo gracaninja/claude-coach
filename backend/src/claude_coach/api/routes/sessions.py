@@ -12,7 +12,12 @@ from claude_coach.schemas.session import (
     Session as SessionSchema,
     Message as MessageSchema,
 )
-from claude_coach.models import Session, Message
+from claude_coach.schemas.analytics import (
+    SessionTimelineResponse,
+    TimelineEvent,
+    TimelineSummary,
+)
+from claude_coach.models import Session, Message, ToolUsage, ErrorEvent, SubagentUsage
 from claude_coach.api.deps import get_db
 
 router = APIRouter()
@@ -158,4 +163,134 @@ async def get_session_messages(
             for m in messages
         ],
         total=total,
+    )
+
+
+@router.get("/{session_id}/timeline", response_model=SessionTimelineResponse)
+async def get_session_timeline(
+    session_id: str,
+    db: DBSession = Depends(get_db),
+):
+    """Get a chronological timeline of all events in a session.
+
+    Returns messages, tool calls (with category), agent spawns, skill invocations,
+    and errors, all merged into a single chronological timeline.
+    """
+    session = db.query(Session).filter(Session.session_id == session_id).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    events: list[TimelineEvent] = []
+
+    # Collect tool_use_ids for agents to enrich with SubagentUsage data
+    subagent_map: dict[str, SubagentUsage] = {}
+    subagents = (
+        db.query(SubagentUsage)
+        .filter(SubagentUsage.session_id == session.id)
+        .all()
+    )
+    for sa in subagents:
+        if sa.tool_use_id:
+            subagent_map[sa.tool_use_id] = sa
+
+    # Summary counters
+    native_count = 0
+    mcp_count = 0
+    agent_count = 0
+    skill_count = 0
+    total_tokens = session.total_input_tokens + session.total_output_tokens
+
+    # Add messages
+    messages = (
+        db.query(Message)
+        .filter(Message.session_id == session.id)
+        .order_by(Message.message_index)
+        .all()
+    )
+    for m in messages:
+        events.append(TimelineEvent(
+            type=f"{m.role}_message",
+            timestamp=m.timestamp.isoformat() if m.timestamp else None,
+            role=m.role,
+            content_preview=(m.content[:200] + "...") if m.content and len(m.content) > 200 else m.content,
+            model=m.model,
+            input_tokens=m.input_tokens,
+            output_tokens=m.output_tokens,
+        ))
+
+    # Add tool calls
+    tool_usages = (
+        db.query(ToolUsage)
+        .filter(ToolUsage.session_id == session.id)
+        .all()
+    )
+    for t in tool_usages:
+        category = t.category or "native"
+
+        if category == "native":
+            native_count += 1
+        elif category == "mcp":
+            mcp_count += 1
+        elif category == "agent":
+            agent_count += 1
+        elif category == "skill":
+            skill_count += 1
+
+        event = TimelineEvent(
+            type="tool_call" if category in ("native", "mcp") else (
+                "agent_spawn" if category == "agent" else "skill_invoke"
+            ),
+            timestamp=t.timestamp.isoformat() if t.timestamp else None,
+            tool_name=t.tool_name,
+            category=category,
+            mcp_server=t.mcp_server,
+            skill_name=t.skill_name,
+            subagent_type=t.subagent_type,
+        )
+
+        # Enrich agent spawns with completion data
+        if category == "agent" and t.tool_use_id and t.tool_use_id in subagent_map:
+            sa = subagent_map[t.tool_use_id]
+            event.agent_description = sa.description
+            event.agent_duration_ms = sa.duration_ms
+            event.agent_total_tokens = sa.total_tokens
+            event.agent_total_tool_count = sa.total_tool_use_count
+            event.agent_status = sa.status
+
+        events.append(event)
+
+    # Add errors
+    errors = (
+        db.query(ErrorEvent)
+        .filter(ErrorEvent.session_id == session.id)
+        .all()
+    )
+    for e in errors:
+        events.append(TimelineEvent(
+            type="error",
+            timestamp=e.timestamp.isoformat() if e.timestamp else None,
+            error_type=e.error_type,
+            error_message=e.error_message,
+        ))
+
+    # Sort all events chronologically
+    events.sort(key=lambda e: e.timestamp or "")
+
+    summary = TimelineSummary(
+        total_messages=len(messages),
+        total_tool_calls=len(tool_usages),
+        native_tool_calls=native_count,
+        mcp_tool_calls=mcp_count,
+        agent_spawns=agent_count,
+        skill_invocations=skill_count,
+        errors=len(errors),
+        total_tokens=total_tokens,
+        duration_ms=session.duration_ms,
+    )
+
+    return SessionTimelineResponse(
+        session_id=session_id,
+        events=events,
+        summary=summary,
     )

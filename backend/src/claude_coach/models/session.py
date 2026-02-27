@@ -37,6 +37,14 @@ class Session(Base):
     # Duration in milliseconds
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Agent/Skill/MCP summary counters
+    subagent_count: Mapped[int] = mapped_column(Integer, default=0)
+    skill_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Session metadata
+    cli_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    slug: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
     # Relationships
     messages: Mapped[list["Message"]] = relationship(
         "Message", back_populates="session", cascade="all, delete-orphan"
@@ -46,6 +54,9 @@ class Session(Base):
     )
     errors: Mapped[list["ErrorEvent"]] = relationship(
         "ErrorEvent", back_populates="session", cascade="all, delete-orphan"
+    )
+    subagent_usages: Mapped[list["SubagentUsage"]] = relationship(
+        "SubagentUsage", back_populates="session", cascade="all, delete-orphan"
     )
 
 
@@ -98,6 +109,12 @@ class ToolUsage(Base):
     is_error: Mapped[bool] = mapped_column(Boolean, default=False)
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Classification
+    category: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # native, mcp, skill, agent
+    mcp_server: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # MCP server name
+    skill_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)  # Skill name for Skill tool
+    subagent_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # Subagent type for Task tool
+
     # Relationship
     session: Mapped["Session"] = relationship("Session", back_populates="tool_usages")
 
@@ -120,3 +137,34 @@ class ErrorEvent(Base):
 
     # Relationship
     session: Mapped["Session"] = relationship("Session", back_populates="errors")
+
+
+class SubagentUsage(Base):
+    """A subagent spawned via the Task tool during a session."""
+
+    __tablename__ = "subagent_usages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), index=True)
+
+    # Agent identification
+    agent_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # short hex id
+    subagent_type: Mapped[str] = mapped_column(String(128), index=True)  # Explore, Plan, Bash, etc.
+    description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    prompt_preview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # truncated prompt
+
+    # Configuration
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # model override
+
+    # Timing
+    timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    tool_use_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # links to Task tool_use
+
+    # Completion stats (populated from task result)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tool_use_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # completed, error
+
+    # Relationship
+    session: Mapped["Session"] = relationship("Session", back_populates="subagent_usages")

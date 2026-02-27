@@ -187,3 +187,142 @@ class SessionErrorsResponse(BaseModel):
     total_errors: int
     by_category: list[ErrorCategorySummary]
     errors: list[ToolErrorDetail]
+
+
+# ========== Timeline schemas ==========
+
+
+class TimelineEvent(BaseModel):
+    """A single event in a session timeline."""
+
+    type: str  # user_message, assistant_message, tool_call, agent_spawn, skill_invoke, error
+    timestamp: Optional[str] = None
+
+    # For messages
+    role: Optional[str] = None
+    content_preview: Optional[str] = None
+    model: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
+    # For tool calls
+    tool_name: Optional[str] = None
+    category: Optional[str] = None  # native, mcp, skill, agent
+    mcp_server: Optional[str] = None
+
+    # For agents
+    subagent_type: Optional[str] = None
+    agent_description: Optional[str] = None
+    agent_duration_ms: Optional[int] = None
+    agent_total_tokens: Optional[int] = None
+    agent_total_tool_count: Optional[int] = None
+    agent_status: Optional[str] = None
+
+    # For skills
+    skill_name: Optional[str] = None
+
+    # For errors
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class SessionTimelineResponse(BaseModel):
+    """Session timeline with all events."""
+
+    session_id: str
+    events: list[TimelineEvent]
+    summary: "TimelineSummary"
+
+
+class TimelineSummary(BaseModel):
+    """Summary stats for a session timeline."""
+
+    total_messages: int = 0
+    total_tool_calls: int = 0
+    native_tool_calls: int = 0
+    mcp_tool_calls: int = 0
+    agent_spawns: int = 0
+    skill_invocations: int = 0
+    errors: int = 0
+    total_tokens: int = 0
+    duration_ms: Optional[int] = None
+
+
+# ========== Agent analytics schemas ==========
+
+
+class AgentTypeStats(BaseModel):
+    """Stats for a single agent type."""
+
+    subagent_type: str
+    count: int
+    total_tokens: int = 0
+    total_duration_ms: int = 0
+    avg_tokens: float = 0
+    avg_duration_ms: float = 0
+    total_tool_use_count: int = 0
+
+
+class AgentDailyCount(BaseModel):
+    """Agent spawn counts for a day."""
+
+    date: str
+    count: int
+
+
+class AgentAnalyticsResponse(BaseModel):
+    """Agent usage analytics."""
+
+    total_spawns: int
+    by_type: list[AgentTypeStats]
+    daily_trend: list[AgentDailyCount]
+
+
+# ========== Skill analytics schemas ==========
+
+
+class SkillStats(BaseModel):
+    """Stats for a single skill."""
+
+    skill_name: str
+    count: int
+
+
+class SkillDailyCount(BaseModel):
+    """Skill invocation counts for a day."""
+
+    date: str
+    count: int
+
+
+class SkillAnalyticsResponse(BaseModel):
+    """Skill usage analytics."""
+
+    total_invocations: int
+    by_skill: list[SkillStats]
+    daily_trend: list[SkillDailyCount]
+
+
+# ========== MCP analytics schemas ==========
+
+
+class McpServerStats(BaseModel):
+    """Stats for a single MCP server."""
+
+    server_name: str
+    total_calls: int
+    tools: list["McpToolStats"]
+
+
+class McpToolStats(BaseModel):
+    """Stats for a single MCP tool."""
+
+    tool_name: str
+    count: int
+
+
+class McpAnalyticsResponse(BaseModel):
+    """MCP usage analytics."""
+
+    total_calls: int
+    by_server: list[McpServerStats]

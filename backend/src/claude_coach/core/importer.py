@@ -12,6 +12,7 @@ from claude_coach.models import (
     Message,
     ToolUsage,
     ErrorEvent,
+    SubagentUsage,
     DailyStats,
     ToolStats,
     ErrorStats,
@@ -49,30 +50,37 @@ class LogImporter:
             "messages_imported": 0,
             "tool_usages_imported": 0,
             "errors_imported": 0,
+            "subagents_imported": 0,
         }
 
         with self.session_factory() as db:
             for project_dir in self._get_project_dirs():
+                # Import top-level JSONL files (legacy format)
                 for session_file in project_dir.glob("*.jsonl"):
                     if session_file.name == "sessions-index.json":
                         continue
 
                     session_id = session_file.stem
+                    self._maybe_import_session(db, session_file, session_id, force, stats)
 
-                    # Check if already imported
-                    if not force:
-                        existing = db.query(Session).filter(
-                            Session.session_id == session_id
-                        ).first()
-                        if existing:
-                            stats["sessions_skipped"] += 1
+                # Import session subdirectories (new format: <session-id>/<session-id>.jsonl)
+                for subdir in project_dir.iterdir():
+                    if not subdir.is_dir():
+                        continue
+                    session_id = subdir.name
+                    # Look for main session file inside the directory
+                    for session_file in subdir.glob("*.jsonl"):
+                        # Skip subagent files
+                        if session_file.name.startswith("agent-"):
                             continue
-
-                    result = self._import_session(db, session_file, session_id)
-                    stats["sessions_imported"] += 1
-                    stats["messages_imported"] += result["messages"]
-                    stats["tool_usages_imported"] += result["tool_usages"]
-                    stats["errors_imported"] += result["errors"]
+                        if (subdir / "subagents").is_dir() and session_file.parent == subdir:
+                            self._maybe_import_session(db, session_file, session_id, force, stats)
+                            break
+                    else:
+                        # Also handle case where main JSONL is directly in subdir
+                        main_file = subdir / f"{session_id}.jsonl"
+                        if main_file.exists():
+                            self._maybe_import_session(db, main_file, session_id, force, stats)
 
             # Update aggregated stats
             self._update_daily_stats(db)
@@ -80,22 +88,82 @@ class LogImporter:
 
         return stats
 
+    def _maybe_import_session(
+        self, db: DBSession, session_file: Path, session_id: str,
+        force: bool, stats: dict
+    ) -> None:
+        """Import a session if not already imported."""
+        if not force:
+            existing = db.query(Session).filter(
+                Session.session_id == session_id
+            ).first()
+            if existing:
+                stats["sessions_skipped"] += 1
+                return
+
+        result = self._import_session(db, session_file, session_id)
+        stats["sessions_imported"] += 1
+        stats["messages_imported"] += result["messages"]
+        stats["tool_usages_imported"] += result["tool_usages"]
+        stats["errors_imported"] += result["errors"]
+        stats["subagents_imported"] += result["subagents"]
+
     def _get_project_dirs(self) -> list[Path]:
         """Get all project directories."""
         if not self.projects_dir.exists():
             return []
         return [d for d in self.projects_dir.iterdir() if d.is_dir()]
 
+    def _classify_tool(self, tool_name: str, tool_input: dict) -> dict:
+        """Classify a tool call into category with metadata.
+
+        Returns dict with: category, mcp_server, skill_name, subagent_type
+        """
+        if tool_name == "Skill":
+            return {
+                "category": "skill",
+                "mcp_server": None,
+                "skill_name": tool_input.get("skill", "unknown"),
+                "subagent_type": None,
+            }
+        elif tool_name == "Task":
+            return {
+                "category": "agent",
+                "mcp_server": None,
+                "skill_name": None,
+                "subagent_type": tool_input.get("subagent_type", "unknown"),
+            }
+        elif tool_name.startswith("mcp__"):
+            parts = tool_name.split("__")
+            server_name = parts[1] if len(parts) >= 3 else "unknown"
+            return {
+                "category": "mcp",
+                "mcp_server": server_name,
+                "skill_name": None,
+                "subagent_type": None,
+            }
+        else:
+            return {
+                "category": "native",
+                "mcp_server": None,
+                "skill_name": None,
+                "subagent_type": None,
+            }
+
     def _import_session(
         self, db: DBSession, session_file: Path, session_id: str
     ) -> dict:
         """Import a single session."""
-        stats = {"messages": 0, "tool_usages": 0, "errors": 0}
+        stats = {"messages": 0, "tool_usages": 0, "errors": 0, "subagents": 0}
 
         # Parse session file
         messages = []
         tool_usages = []
         errors = []
+        subagent_usages = []
+
+        # Track subagent tool_use_ids to match with completion results
+        pending_subagents: dict[str, SubagentUsage] = {}  # tool_use_id → SubagentUsage
 
         total_input = 0
         total_output = 0
@@ -106,8 +174,12 @@ class LogImporter:
         last_timestamp = None
         project_path = ""
         git_branch = ""
+        cli_version = ""
+        slug = ""
         message_index = 0
         cumulative_tokens = 0
+        subagent_count = 0
+        skill_count = 0
 
         with open(session_file) as f:
             for line in f:
@@ -129,11 +201,15 @@ class LogImporter:
                         first_timestamp = timestamp
                     last_timestamp = timestamp
 
-                # Extract project info
+                # Extract project info and metadata
                 if not project_path and event.get("cwd"):
                     project_path = event.get("cwd", "")
                 if not git_branch and event.get("gitBranch"):
                     git_branch = event.get("gitBranch", "")
+                if not cli_version and event.get("version"):
+                    cli_version = event.get("version", "")
+                if not slug and event.get("slug"):
+                    slug = event.get("slug", "")
 
                 if event_type == "user":
                     msg = event.get("message", {})
@@ -151,6 +227,23 @@ class LogImporter:
                         ))
                         message_index += 1
 
+                    elif isinstance(content, list):
+                        # Tool results - check for subagent completion
+                        for item in content:
+                            if item.get("type") == "tool_result":
+                                tool_use_id = item.get("tool_use_id")
+                                # Check if this is a subagent result via toolUseResult
+                                tool_result = event.get("toolUseResult", {})
+                                if isinstance(tool_result, dict) and tool_result.get("agentId"):
+                                    # This is a Task completion result
+                                    if tool_use_id and tool_use_id in pending_subagents:
+                                        agent = pending_subagents[tool_use_id]
+                                        agent.agent_id = tool_result.get("agentId")
+                                        agent.status = tool_result.get("status", "completed")
+                                        agent.duration_ms = tool_result.get("totalDurationMs")
+                                        agent.total_tokens = tool_result.get("totalTokens")
+                                        agent.total_tool_use_count = tool_result.get("totalToolUseCount")
+
                 elif event_type == "assistant":
                     msg = event.get("message", {})
                     usage = msg.get("usage", {})
@@ -166,20 +259,53 @@ class LogImporter:
                     total_cache_create += cache_create
                     cumulative_tokens = input_tokens + cache_read
 
-                    # Extract text content
+                    # Extract text content and tool calls
                     content_parts = msg.get("content", [])
                     text_content = ""
                     for part in content_parts:
                         if part.get("type") == "text":
                             text_content += part.get("text", "")
                         elif part.get("type") == "tool_use":
-                            tool_usages.append(ToolUsage(
-                                tool_name=part.get("name", "unknown"),
-                                tool_use_id=part.get("id"),
+                            tool_name = part.get("name", "unknown")
+                            tool_input = part.get("input", {})
+                            tool_use_id = part.get("id")
+
+                            # Classify the tool
+                            classification = self._classify_tool(tool_name, tool_input)
+
+                            tool_usage = ToolUsage(
+                                tool_name=tool_name,
+                                tool_use_id=tool_use_id,
                                 timestamp=timestamp,
-                                input_preview=str(part.get("input", {}))[:500],
-                            ))
+                                input_preview=str(tool_input)[:500],
+                                category=classification["category"],
+                                mcp_server=classification["mcp_server"],
+                                skill_name=classification["skill_name"],
+                                subagent_type=classification["subagent_type"],
+                            )
+                            tool_usages.append(tool_usage)
                             stats["tool_usages"] += 1
+
+                            # Track skills
+                            if classification["category"] == "skill":
+                                skill_count += 1
+
+                            # Create SubagentUsage for Task tools
+                            if classification["category"] == "agent":
+                                subagent_count += 1
+                                subagent = SubagentUsage(
+                                    subagent_type=classification["subagent_type"] or "unknown",
+                                    description=str(tool_input.get("description", ""))[:512],
+                                    prompt_preview=str(tool_input.get("prompt", ""))[:500],
+                                    model=tool_input.get("model"),
+                                    timestamp=timestamp,
+                                    tool_use_id=tool_use_id,
+                                )
+                                subagent_usages.append(subagent)
+                                stats["subagents"] += 1
+                                # Track for completion matching
+                                if tool_use_id:
+                                    pending_subagents[tool_use_id] = subagent
 
                     if text_content:
                         messages.append(Message(
@@ -228,6 +354,10 @@ class LogImporter:
             tool_call_count=len(tool_usages),
             error_count=len(errors),
             duration_ms=duration_ms,
+            subagent_count=subagent_count,
+            skill_count=skill_count,
+            cli_version=cli_version or None,
+            slug=slug or None,
         )
 
         # Delete existing if force re-import
@@ -236,7 +366,7 @@ class LogImporter:
         db.add(session)
         db.flush()  # Get session.id
 
-        # Add messages, tools, errors
+        # Add messages, tools, errors, subagents
         for msg in messages:
             msg.session_id = session.id
             db.add(msg)
@@ -249,6 +379,10 @@ class LogImporter:
         for error in errors:
             error.session_id = session.id
             db.add(error)
+
+        for subagent in subagent_usages:
+            subagent.session_id = session.id
+            db.add(subagent)
 
         return stats
 

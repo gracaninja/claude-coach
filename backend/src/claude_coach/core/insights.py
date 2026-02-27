@@ -5,14 +5,14 @@ from typing import Optional
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy import func
 
-from claude_coach.models import Session, ToolUsage, ErrorEvent, Message
+from claude_coach.models import Session, ToolUsage, ErrorEvent, Message, SubagentUsage
 
 
 @dataclass
 class Insight:
     """A single insight or recommendation."""
 
-    category: str  # efficiency, tools, errors, patterns
+    category: str  # efficiency, tools, errors, patterns, agents, skills, mcp
     title: str
     description: str
     severity: str  # info, suggestion, warning
@@ -34,6 +34,9 @@ class InsightsEngine:
         insights.extend(self._tool_insights())
         insights.extend(self._error_insights())
         insights.extend(self._pattern_insights())
+        insights.extend(self._agent_insights())
+        insights.extend(self._skill_insights())
+        insights.extend(self._mcp_insights())
 
         return insights
 
@@ -260,6 +263,206 @@ class InsightsEngine:
                     severity="info",
                     metric_value=avg_duration_min,
                     metric_label="Avg duration (min)",
+                ))
+
+        return insights
+
+    def _agent_insights(self) -> list[Insight]:
+        """Generate insights about subagent usage patterns."""
+        insights = []
+
+        total_sessions = self.db.query(Session).count()
+        if total_sessions == 0:
+            return insights
+
+        # Count total agent spawns
+        total_agents = self.db.query(SubagentUsage).count()
+
+        if total_agents == 0:
+            insights.append(Insight(
+                category="agents",
+                title="No Subagent Usage Detected",
+                description=(
+                    "You're not using subagents (Task tool). Delegating research, "
+                    "exploration, and testing to subagents can speed up complex tasks "
+                    "and reduce main context window pressure."
+                ),
+                severity="suggestion",
+                metric_value=0,
+                metric_label="Subagent spawns",
+            ))
+            return insights
+
+        # Agents per session
+        agents_per_session = total_agents / total_sessions
+        insights.append(Insight(
+            category="agents",
+            title="Agent Usage Rate",
+            description=(
+                f"You spawn {agents_per_session:.1f} subagents per session on average "
+                f"({total_agents} total across {total_sessions} sessions)."
+            ),
+            severity="info",
+            metric_value=agents_per_session,
+            metric_label="Agents per session",
+        ))
+
+        # Check for general-purpose overuse
+        type_counts = (
+            self.db.query(SubagentUsage.subagent_type, func.count(SubagentUsage.id))
+            .group_by(SubagentUsage.subagent_type)
+            .all()
+        )
+        type_dict = {t: c for t, c in type_counts}
+        general_count = type_dict.get("general-purpose", 0)
+
+        if general_count > total_agents * 0.5 and total_agents > 5:
+            insights.append(Insight(
+                category="agents",
+                title="Consider Specialized Agent Types",
+                description=(
+                    f"Over 50% of your agents ({general_count}/{total_agents}) are "
+                    "'general-purpose'. Specialized types like 'Explore' (for search), "
+                    "'Plan' (for architecture), or 'Bash' (for commands) can be faster "
+                    "and more token-efficient for specific tasks."
+                ),
+                severity="suggestion",
+                metric_value=general_count / total_agents * 100,
+                metric_label="General-purpose (%)",
+            ))
+
+        # Check agent token efficiency
+        agents_with_tokens = self.db.query(SubagentUsage).filter(
+            SubagentUsage.total_tokens.isnot(None)
+        ).all()
+
+        if agents_with_tokens:
+            avg_tokens = sum(a.total_tokens for a in agents_with_tokens) / len(agents_with_tokens)
+            if avg_tokens > 50000:
+                insights.append(Insight(
+                    category="agents",
+                    title="High Token Usage per Agent",
+                    description=(
+                        f"Your agents average {avg_tokens:,.0f} tokens each. "
+                        "Consider using model='haiku' for simple tasks (exploration, "
+                        "search) to reduce costs significantly."
+                    ),
+                    severity="suggestion",
+                    metric_value=avg_tokens,
+                    metric_label="Avg tokens/agent",
+                ))
+
+        return insights
+
+    def _skill_insights(self) -> list[Insight]:
+        """Generate insights about skill usage."""
+        insights = []
+
+        total_skills = (
+            self.db.query(ToolUsage)
+            .filter(ToolUsage.category == "skill")
+            .count()
+        )
+
+        if total_skills == 0:
+            insights.append(Insight(
+                category="skills",
+                title="No Skills Used",
+                description=(
+                    "You haven't used any Claude Code skills. Skills like "
+                    "'brainstorming', 'code-review', and 'writing-plans' provide "
+                    "structured workflows that can improve output quality. "
+                    "Try /skill in Claude Code to see available skills."
+                ),
+                severity="suggestion",
+                metric_value=0,
+                metric_label="Skill invocations",
+            ))
+        else:
+            # Get skill names
+            skill_counts = (
+                self.db.query(ToolUsage.skill_name, func.count(ToolUsage.id))
+                .filter(ToolUsage.category == "skill")
+                .group_by(ToolUsage.skill_name)
+                .order_by(func.count(ToolUsage.id).desc())
+                .all()
+            )
+
+            skill_names = [name for name, _ in skill_counts if name]
+            top_skill = skill_counts[0] if skill_counts else None
+
+            insights.append(Insight(
+                category="skills",
+                title=f"Active Skill User ({total_skills} invocations)",
+                description=(
+                    f"You use {len(skill_names)} different skills. "
+                    f"Most used: {top_skill[0]} ({top_skill[1]}x). "
+                    "Skills provide structured workflows for common tasks."
+                ) if top_skill else f"You've invoked skills {total_skills} times.",
+                severity="info",
+                metric_value=total_skills,
+                metric_label="Total skill invocations",
+            ))
+
+        return insights
+
+    def _mcp_insights(self) -> list[Insight]:
+        """Generate insights about MCP server usage."""
+        insights = []
+
+        # Count MCP tool usage
+        mcp_tools = (
+            self.db.query(ToolUsage.mcp_server, func.count(ToolUsage.id).label("count"))
+            .filter(ToolUsage.category == "mcp")
+            .group_by(ToolUsage.mcp_server)
+            .order_by(func.count(ToolUsage.id).desc())
+            .all()
+        )
+
+        total_mcp = sum(count for _, count in mcp_tools)
+
+        if total_mcp == 0:
+            insights.append(Insight(
+                category="mcp",
+                title="No MCP Server Usage",
+                description=(
+                    "You're not using any MCP (Model Context Protocol) servers. "
+                    "MCP servers can extend Claude's capabilities with external tools "
+                    "like file systems, databases, browsers, and custom APIs."
+                ),
+                severity="info",
+                metric_value=0,
+                metric_label="MCP calls",
+            ))
+        else:
+            server_count = len(mcp_tools)
+            top_server = mcp_tools[0] if mcp_tools else None
+
+            insights.append(Insight(
+                category="mcp",
+                title=f"Using {server_count} MCP Server{'s' if server_count > 1 else ''}",
+                description=(
+                    f"You have {total_mcp} total MCP tool calls across {server_count} servers. "
+                    f"Most active: {top_server[0]} ({top_server[1]} calls)."
+                ) if top_server else f"You have {total_mcp} MCP tool calls.",
+                severity="info",
+                metric_value=total_mcp,
+                metric_label="Total MCP calls",
+            ))
+
+            # Check for low-usage servers
+            low_usage = [name for name, count in mcp_tools if count < 5]
+            if low_usage and len(low_usage) < len(mcp_tools):
+                insights.append(Insight(
+                    category="mcp",
+                    title="Underused MCP Servers",
+                    description=(
+                        f"MCP servers {', '.join(low_usage)} have very few calls. "
+                        "Consider if they're still needed, or explore their capabilities more."
+                    ),
+                    severity="info",
+                    metric_value=len(low_usage),
+                    metric_label="Underused servers",
                 ))
 
         return insights

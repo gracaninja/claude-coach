@@ -64,3 +64,50 @@ export async function fetchSession(sessionId: string): Promise<SessionDetail> {
   const response = await api.get(`/sessions/${sessionId}`)
   return response.data
 }
+
+// Timeline types and fetch
+
+export interface TimelineEvent {
+  type: string // user_message, assistant_message, tool_call, agent_spawn, skill_invoke, error
+  timestamp?: string
+  role?: string
+  content_preview?: string
+  model?: string
+  input_tokens?: number
+  output_tokens?: number
+  tool_name?: string
+  category?: string // native, mcp, skill, agent
+  mcp_server?: string
+  subagent_type?: string
+  agent_description?: string
+  agent_duration_ms?: number
+  agent_total_tokens?: number
+  agent_total_tool_count?: number
+  agent_status?: string
+  skill_name?: string
+  error_type?: string
+  error_message?: string
+}
+
+export interface TimelineSummary {
+  total_messages: number
+  total_tool_calls: number
+  native_tool_calls: number
+  mcp_tool_calls: number
+  agent_spawns: number
+  skill_invocations: number
+  errors: number
+  total_tokens: number
+  duration_ms?: number
+}
+
+export interface SessionTimelineResponse {
+  session_id: string
+  events: TimelineEvent[]
+  summary: TimelineSummary
+}
+
+export async function fetchSessionTimeline(sessionId: string): Promise<SessionTimelineResponse> {
+  const response = await api.get(`/sessions/${sessionId}/timeline`)
+  return response.data
+}

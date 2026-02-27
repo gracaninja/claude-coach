@@ -27,6 +27,15 @@ from claude_coach.schemas.analytics import (
     TimeframeErrorsResponse,
     DailyErrorSummary,
     SubcategoryDetail,
+    AgentAnalyticsResponse,
+    AgentTypeStats,
+    AgentDailyCount,
+    SkillAnalyticsResponse,
+    SkillStats,
+    SkillDailyCount,
+    McpAnalyticsResponse,
+    McpServerStats,
+    McpToolStats,
 )
 from claude_coach.models import (
     Session,
@@ -36,6 +45,7 @@ from claude_coach.models import (
     ErrorStats,
     ToolUsage,
     ErrorEvent,
+    SubagentUsage,
 )
 from claude_coach.api.deps import get_db
 from claude_coach.core.parser import LogParser
@@ -62,7 +72,7 @@ async def get_token_usage(
             func.sum(Session.total_output_tokens).label("output_tokens"),
             func.sum(Session.total_cache_read_tokens).label("cache_read_tokens"),
             func.sum(Session.total_cache_creation_tokens).label("cache_creation_tokens"),
-        ).filter(Session.project_path.in_(project))
+        ).filter(Session.project_path.in_(project)).filter(Session.created_at.isnot(None))
 
         if start_date:
             query = query.filter(cast(Session.created_at, Date) >= start_date)
@@ -433,4 +443,185 @@ async def get_session_errors(
             )
             for e in errors
         ],
+    )
+
+
+@router.get("/agents", response_model=AgentAnalyticsResponse)
+async def get_agent_analytics(
+    project: Optional[list[str]] = Query(None, description="Filter by project paths"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: DBSession = Depends(get_db),
+):
+    """Get subagent usage analytics.
+
+    Returns total spawns, breakdown by agent type with avg duration/tokens,
+    and daily trend.
+    """
+    query = db.query(SubagentUsage)
+
+    if project:
+        query = query.join(Session, SubagentUsage.session_id == Session.id).filter(
+            Session.project_path.in_(project)
+        )
+
+    if start_date:
+        query = query.filter(SubagentUsage.timestamp >= str(start_date))
+    if end_date:
+        query = query.filter(SubagentUsage.timestamp <= str(end_date))
+
+    all_agents = query.all()
+    total_spawns = len(all_agents)
+
+    # Group by type
+    type_groups: dict[str, list[SubagentUsage]] = {}
+    for agent in all_agents:
+        t = agent.subagent_type or "unknown"
+        if t not in type_groups:
+            type_groups[t] = []
+        type_groups[t].append(agent)
+
+    by_type = []
+    for agent_type, agents in sorted(type_groups.items(), key=lambda x: len(x[1]), reverse=True):
+        count = len(agents)
+        total_tokens = sum(a.total_tokens or 0 for a in agents)
+        total_duration = sum(a.duration_ms or 0 for a in agents)
+        total_tool_count = sum(a.total_tool_use_count or 0 for a in agents)
+
+        by_type.append(AgentTypeStats(
+            subagent_type=agent_type,
+            count=count,
+            total_tokens=total_tokens,
+            total_duration_ms=total_duration,
+            avg_tokens=total_tokens / count if count else 0,
+            avg_duration_ms=total_duration / count if count else 0,
+            total_tool_use_count=total_tool_count,
+        ))
+
+    # Daily trend
+    daily_counts: dict[str, int] = {}
+    for agent in all_agents:
+        if agent.timestamp:
+            day = agent.timestamp.strftime("%Y-%m-%d")
+            daily_counts[day] = daily_counts.get(day, 0) + 1
+
+    daily_trend = [
+        AgentDailyCount(date=d, count=c)
+        for d, c in sorted(daily_counts.items())
+    ]
+
+    return AgentAnalyticsResponse(
+        total_spawns=total_spawns,
+        by_type=by_type,
+        daily_trend=daily_trend,
+    )
+
+
+@router.get("/skills", response_model=SkillAnalyticsResponse)
+async def get_skill_analytics(
+    project: Optional[list[str]] = Query(None, description="Filter by project paths"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: DBSession = Depends(get_db),
+):
+    """Get skill usage analytics.
+
+    Returns total skill invocations, breakdown by skill name, and daily trend.
+    """
+    query = db.query(ToolUsage).filter(ToolUsage.category == "skill")
+
+    if project:
+        query = query.join(Session, ToolUsage.session_id == Session.id).filter(
+            Session.project_path.in_(project)
+        )
+
+    if start_date:
+        query = query.filter(ToolUsage.timestamp >= str(start_date))
+    if end_date:
+        query = query.filter(ToolUsage.timestamp <= str(end_date))
+
+    all_skills = query.all()
+    total_invocations = len(all_skills)
+
+    # Group by skill name
+    skill_counts: dict[str, int] = {}
+    for s in all_skills:
+        name = s.skill_name or "unknown"
+        skill_counts[name] = skill_counts.get(name, 0) + 1
+
+    by_skill = [
+        SkillStats(skill_name=name, count=count)
+        for name, count in sorted(skill_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    # Daily trend
+    daily_counts: dict[str, int] = {}
+    for s in all_skills:
+        if s.timestamp:
+            day = s.timestamp.strftime("%Y-%m-%d")
+            daily_counts[day] = daily_counts.get(day, 0) + 1
+
+    daily_trend = [
+        SkillDailyCount(date=d, count=c)
+        for d, c in sorted(daily_counts.items())
+    ]
+
+    return SkillAnalyticsResponse(
+        total_invocations=total_invocations,
+        by_skill=by_skill,
+        daily_trend=daily_trend,
+    )
+
+
+@router.get("/mcp", response_model=McpAnalyticsResponse)
+async def get_mcp_analytics(
+    project: Optional[list[str]] = Query(None, description="Filter by project paths"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: DBSession = Depends(get_db),
+):
+    """Get MCP server/tool usage analytics.
+
+    Returns total MCP calls, breakdown by server, and top tools per server.
+    """
+    query = db.query(ToolUsage).filter(ToolUsage.category == "mcp")
+
+    if project:
+        query = query.join(Session, ToolUsage.session_id == Session.id).filter(
+            Session.project_path.in_(project)
+        )
+
+    if start_date:
+        query = query.filter(ToolUsage.timestamp >= str(start_date))
+    if end_date:
+        query = query.filter(ToolUsage.timestamp <= str(end_date))
+
+    all_mcp = query.all()
+    total_calls = len(all_mcp)
+
+    # Group by server → tools
+    servers: dict[str, dict[str, int]] = {}
+    for m in all_mcp:
+        server = m.mcp_server or "unknown"
+        if server not in servers:
+            servers[server] = {}
+        tool = m.tool_name
+        servers[server][tool] = servers[server].get(tool, 0) + 1
+
+    by_server = []
+    for server_name, tools in sorted(servers.items(), key=lambda x: sum(x[1].values()), reverse=True):
+        server_total = sum(tools.values())
+        tool_stats = [
+            McpToolStats(tool_name=name, count=count)
+            for name, count in sorted(tools.items(), key=lambda x: x[1], reverse=True)
+        ]
+        by_server.append(McpServerStats(
+            server_name=server_name,
+            total_calls=server_total,
+            tools=tool_stats,
+        ))
+
+    return McpAnalyticsResponse(
+        total_calls=total_calls,
+        by_server=by_server,
     )

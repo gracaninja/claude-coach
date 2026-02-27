@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { createContext, useContext, useState, ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchFilters } from '../api/sessions'
 

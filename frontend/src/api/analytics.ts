@@ -206,3 +206,89 @@ export async function fetchSessionErrors(sessionId: string): Promise<SessionErro
   const response = await api.get(`/analytics/error-analysis/session/${sessionId}`)
   return response.data
 }
+
+// ========== Agent Analytics ==========
+
+export interface AgentTypeStats {
+  subagent_type: string
+  count: number
+  total_tokens: number
+  total_duration_ms: number
+  avg_tokens: number
+  avg_duration_ms: number
+  total_tool_use_count: number
+}
+
+export interface AgentDailyCount {
+  date: string
+  count: number
+}
+
+export interface AgentAnalyticsResponse {
+  total_spawns: number
+  by_type: AgentTypeStats[]
+  daily_trend: AgentDailyCount[]
+}
+
+export async function fetchAgentAnalytics(params: {
+  project?: string[]
+  start_date?: string
+  end_date?: string
+} = {}): Promise<AgentAnalyticsResponse> {
+  const response = await api.get('/analytics/agents', { params, paramsSerializer: { indexes: null } })
+  return response.data
+}
+
+// ========== Skill Analytics ==========
+
+export interface SkillStats {
+  skill_name: string
+  count: number
+}
+
+export interface SkillDailyCount {
+  date: string
+  count: number
+}
+
+export interface SkillAnalyticsResponse {
+  total_invocations: number
+  by_skill: SkillStats[]
+  daily_trend: SkillDailyCount[]
+}
+
+export async function fetchSkillAnalytics(params: {
+  project?: string[]
+  start_date?: string
+  end_date?: string
+} = {}): Promise<SkillAnalyticsResponse> {
+  const response = await api.get('/analytics/skills', { params, paramsSerializer: { indexes: null } })
+  return response.data
+}
+
+// ========== MCP Analytics ==========
+
+export interface McpToolStats {
+  tool_name: string
+  count: number
+}
+
+export interface McpServerStats {
+  server_name: string
+  total_calls: number
+  tools: McpToolStats[]
+}
+
+export interface McpAnalyticsResponse {
+  total_calls: number
+  by_server: McpServerStats[]
+}
+
+export async function fetchMcpAnalytics(params: {
+  project?: string[]
+  start_date?: string
+  end_date?: string
+} = {}): Promise<McpAnalyticsResponse> {
+  const response = await api.get('/analytics/mcp', { params, paramsSerializer: { indexes: null } })
+  return response.data
+}
